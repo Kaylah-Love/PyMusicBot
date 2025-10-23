@@ -1,7 +1,7 @@
-# Make sure to install yt-dlp: pip install yt-dlp
+from typing import Optional 
 import yt_dlp
 
-def get_audio_stream_url(video_url: str) -> str | None:
+def get_audio_stream_url(video_url: str) -> Optional[str]:
     """
     Uses yt-dlp to extract the direct audio stream URL from a video URL (e.g., YouTube).
     """
