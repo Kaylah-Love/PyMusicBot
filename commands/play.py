@@ -1,4 +1,5 @@
 import asyncio
+import discord
 from typing import Optional
 from discord.ext import commands
 from helpers.youtube_fetch import get_audio_stream_url
@@ -6,23 +7,35 @@ from helpers.play_stream import play_stream
 from helpers.youtube_query import search_youtube_urls
 from helpers.youtube_url_checker import is_valid_youtube_url
 from helpers.youtube_video_info import get_video_info
+from helpers.command_dict import add_command
 from helpers.queue import get_queue, pop_from_queue, add_to_queue
 
 class Play(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        add_command('play', 'Plays audio from a YouTube URL or search query')
 
     @commands.command(name='play')
     async def play(self, ctx, *, query: str):
-        """Plays audio from a YouTube URL or search query"""
         await self._play_audio_logic(ctx, query=query)
 
     async def _play_audio_logic(self, ctx, *, query: str, vidInfo: Optional[dict] = None, forcePlay: bool = False):
         if not ctx.author.voice:
-            await ctx.send("You are not connected to a voice channel")
+            # Error embed for not in VC
+            embed = discord.Embed(
+                description="You are not connected to a voice channel",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
             return
         
-        message = await ctx.send(f"Searching for `{query}`")
+        # "Loading" embed
+        embed = discord.Embed(
+            description=f"Loading `{query}`...",
+            color=discord.Color.purple()
+        )
+        message = await ctx.send(embed=embed)
+        
         channel = ctx.author.voice.channel
         voice_client = ctx.guild.voice_client
 
@@ -33,44 +46,63 @@ class Play(commands.Cog):
         
         url = query
         if not is_valid_youtube_url(query):
-            # Run blocking search_youtube_urls in a separate thread
             urls = await asyncio.to_thread(search_youtube_urls, query, 1) 
             
             if urls and len(urls) > 0:
                 url = urls[0]
             else:
-                await message.edit(content=f"Could not find a valid youtube video from your query `{query}`")
+                # Error embed for no results
+                embed = discord.Embed(
+                    description=f"Could not find a valid YouTube video from your query `{query}`",
+                    color=discord.Color.red()
+                )
+                await message.edit(embed=embed)
                 return
-            
-        info = vidInfo
-        if vidInfo is None:
-            # Run blocking get_video_info in a separate thread
-            info = await asyncio.to_thread(get_video_info, url)
         
         if not forcePlay and (voice_client.is_playing() or voice_client.is_paused()):
+            info = { "webpage_url": url }
             add_to_queue(ctx.guild.id, info)
-            await message.edit(content=f"Added to queue: {info['title']}")
+            
+            # "Added to Queue" embed
+            embed = discord.Embed(
+                title="Added to Queue",
+                description=f"{url}",
+                color=discord.Color.purple()
+            )
+            if info.get('thumbnail'):
+                embed.set_thumbnail(url=info['thumbnail'])
+            embed.set_footer(
+                text=f"Requested by {ctx.author.display_name}",
+                icon_url=ctx.author.display_avatar.url
+            )
+            await message.edit(embed=embed)
             return
         
+        info = vidInfo
+        if vidInfo is None:
+            info = await asyncio.to_thread(get_video_info, url)
+        
         async def after_playing(_):
-            # Make sure we don't delete the message if it was already updated by the new song
             try:
                 await message.delete() 
-            except Exception: # Handle discord.errors.NotFound if message is gone
-                pass
+            except discord.errors.NotFound: 
+                pass # Message was already deleted
+            except Exception:
+                pass # Handle other potential errors
             
             if get_queue(ctx.guild.id):
                 nextInfo = pop_from_queue(ctx.guild.id)
-                
-                # RECURSIVE CALL: The next track will start by running blocking calls
-                # in a thread, so it shouldn't stutter the 'after_playing' callback.
                 await self._play_audio_logic(ctx, query=nextInfo['webpage_url'], vidInfo=nextInfo, forcePlay=True)
 
-        # Get the stream URL - MAKE NON-BLOCKING
         stream_url = await asyncio.to_thread(get_audio_stream_url, url)
 
         if not stream_url:
-            await message.edit(content=f"Could not find a playable audio stream from {url}") 
+            # Error embed for no stream
+            embed = discord.Embed(
+                description=f"Could not find a playable audio stream from {url}",
+                color=discord.Color.red()
+            )
+            await message.edit(embed=embed)
             return
             
         error = await play_stream(
@@ -80,9 +112,45 @@ class Play(commands.Cog):
         )
 
         if error:
-            await message.edit(content=error)
+            # Error embed for playback error
+            embed = discord.Embed(
+                description=str(error),
+                color=discord.Color.red()
+            )
+            await message.edit(embed=embed)
         else:
-            await message.edit(content=f"Now playing: {info['title']}")
+            # "Now Playing" embed
+            embed = discord.Embed(
+                title="▶️ Now Playing",
+                description=f"**[{info['title']}]({info['webpage_url']})**",
+                color=discord.Color.purple()
+            )
+            
+            if info.get('thumbnail'):
+                embed.set_thumbnail(url=info['thumbnail'])
+            
+            # Add uploader if available
+            if info.get('uploader'):
+                embed.add_field(name="Uploader", value=info['uploader'], inline=True)
+            
+            # Format and add duration
+            duration = info.get('duration_string')
+            if not duration and info.get('duration'):
+                # Basic formatter for seconds -> MM:SS or HH:MM:SS
+                secs = info['duration']
+                m, s = divmod(secs, 60)
+                h, m = divmod(m, 60)
+                duration = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+            
+            if duration:
+                embed.add_field(name="Duration", value=duration, inline=True)
+
+            embed.set_footer(
+                text=f"Requested by {ctx.author.display_name}",
+                icon_url=ctx.author.display_avatar.url
+            )
+            
+            await message.edit(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Play(bot))

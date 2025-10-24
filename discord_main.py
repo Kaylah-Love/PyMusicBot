@@ -24,7 +24,7 @@ class MusicBot(commands.Bot):
                     print(f"Failed to load {filename}: {e}")
         print("--- All commands loaded ---")
 
-bot = MusicBot(command_prefix=BOT_PREFIX, intents=intents)
+bot = MusicBot(command_prefix=BOT_PREFIX, intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
